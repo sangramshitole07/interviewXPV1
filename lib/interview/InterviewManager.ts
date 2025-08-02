@@ -1,10 +1,17 @@
 import { WeaviateService, InterviewQuestion, StudentResponse } from '../weaviate';
-import { InterviewChains, ResponseEvaluation, GeneratedQuestion } from '../langchain/chains';
+import { InterviewChains, ResponseEvaluation, GeneratedQuestion, QuestionType } from '../langchain/chains';
 
 export interface SkillRating {
   topic: string;
   rating: number; // 1-10 scale
   category: 'languages' | 'frameworks' | 'ai_tools';
+}
+
+export interface QuestionWithType extends GeneratedQuestion {
+  type: QuestionType;
+  options?: string[];
+  codeSnippet?: string;
+  expectedCompletion?: string;
 }
 
 export interface InterviewSession {
@@ -16,8 +23,11 @@ export interface InterviewSession {
   focusedTechnology?: string;
   skillRatings: SkillRating[];
   responses: StudentResponse[];
+  currentQuestionData?: QuestionWithType;
   averageScore: number;
   status: 'active' | 'completed' | 'paused';
+  subjectRatings: Record<string, number>;
+  skippedSubjects: string[];
 }
 
 export interface InterviewConfig {
@@ -61,13 +71,15 @@ export class InterviewManager {
       responses: [],
       averageScore: 0,
       status: 'active',
+      subjectRatings: {},
+      skippedSubjects: [],
     };
 
     this.sessions.set(sessionId, session);
     return session;
   }
 
-  async getNextQuestion(sessionId: string, focusedTechnology?: string): Promise<GeneratedQuestion | null> {
+  async getNextQuestion(sessionId: string, focusedTechnology?: string): Promise<QuestionWithType | null> {
     const session = this.sessions.get(sessionId);
     if (!session || session.status !== 'active') {
       return null;
@@ -87,22 +99,40 @@ export class InterviewManager {
     // Determine difficulty based on performance and skill rating
     const difficulty = this.calculateDifficulty(session, skillRating);
     
-    // Check if we should use adaptive questioning
-    if (session.responses.length >= 2) {
-      const recentScores = session.responses.slice(-3).map(r => r.score);
-      const averageScore = session.responses.reduce((sum, r) => sum + r.score, 0) / session.responses.length;
-      
-      return await this.chains.generateAdaptiveQuestion(
-        targetTechnology,
-        difficulty,
-        averageScore,
-        recentScores,
-        skillRating
-      );
+    // Check if we need to ask for subject rating first
+    if (!session.subjectRatings[targetTechnology]) {
+      const ratingQuestion: QuestionWithType = {
+        question: `Before we start with ${targetTechnology}, please rate your proficiency level from 1-10. Do you want to skip this subject?`,
+        expectedAnswer: 'Self-assessment rating and skip preference',
+        difficulty: 'beginner' as const,
+        tags: ['self-assessment', targetTechnology],
+        type: 'rating' as QuestionType,
+        options: ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Skip Subject']
+      };
+      session.currentQuestionData = ratingQuestion;
+      return ratingQuestion;
     } else {
-      // Generate initial question
-      const previousQuestions = session.responses.map(r => `Q${session.responses.indexOf(r) + 1}`);
-      return await this.chains.generateQuestion(targetTechnology, difficulty, skillRating, previousQuestions);
+      // Generate adaptive question based on performance
+      let question: QuestionWithType;
+      
+      if (session.responses.length >= 2) {
+        const recentScores = session.responses.slice(-3).map(r => r.score);
+        const averageScore = session.responses.reduce((sum, r) => sum + r.score, 0) / session.responses.length;
+        
+        question = await this.chains.generateAdaptiveQuestion(
+          targetTechnology,
+          difficulty,
+          averageScore,
+          recentScores,
+          skillRating
+        );
+      } else {
+        const previousQuestions = session.responses.map(r => `Q${session.responses.indexOf(r) + 1}`);
+        question = await this.chains.generateQuestion(targetTechnology, difficulty, skillRating, previousQuestions);
+      }
+      
+      session.currentQuestionData = question;
+      return question;
     }
   }
 
@@ -117,14 +147,45 @@ export class InterviewManager {
       return null;
     }
 
+    // Handle subject rating responses
+    if (session.currentQuestionData?.type === 'rating') {
+      const currentTopic = session.focusedTechnology || this.selectNextTechnology(session);
+      
+      if (response.toLowerCase().includes('skip')) {
+        session.skippedSubjects.push(currentTopic);
+        // Move to next subject
+        const nextQuestion = await this.getNextQuestion(sessionId);
+        return {
+          score: 0,
+          feedback: `${currentTopic} has been skipped. Moving to the next subject.`,
+          strengths: [],
+          improvements: [],
+        };
+      } else {
+        // Extract rating from response
+        const rating = parseInt(response.match(/\d+/)?.[0] || '5');
+        session.subjectRatings[currentTopic] = rating;
+        
+        // Get first actual question for this subject
+        const nextQuestion = await this.getNextQuestion(sessionId, currentTopic);
+        return {
+          score: 100,
+          feedback: `Thank you for rating your ${currentTopic} skills as ${rating}/10. Let's begin with the questions!`,
+          strengths: ['Self-assessment completed'],
+          improvements: [],
+        };
+      }
+    }
+
     // Get the current question details (in a real implementation, you'd store this)
     const currentTopic = session.focusedTechnology || this.selectNextTechnology(session);
     const skillRating = session.skillRatings.find(sr => sr.topic === currentTopic)?.rating || 5;
     const difficulty = this.calculateDifficulty(session, skillRating);
     
-    // For demo purposes, create a mock question
-    const mockQuestion = `Interview question about ${currentTopic}`;
-    const mockExpectedAnswer = `Expected answer covering key concepts of ${currentTopic}`;
+    // Use the stored question data
+    const questionData = session.currentQuestionData;
+    const mockQuestion = questionData?.question || `Interview question about ${currentTopic}`;
+    const mockExpectedAnswer = questionData?.expectedAnswer || `Expected answer covering key concepts of ${currentTopic}`;
 
     // Evaluate the response
     const evaluation = await this.chains.evaluateResponse(
@@ -133,6 +194,7 @@ export class InterviewManager {
       mockExpectedAnswer,
       currentTopic,
       difficulty
+      questionData?.type || 'textual'
     );
 
     // Store the response
@@ -211,9 +273,33 @@ export class InterviewManager {
     return await this.weaviateService.getStudentHistory(studentId);
   }
 
+  async handleSubjectSkip(sessionId: string, subject: string): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    
+    session.skippedSubjects.push(subject);
+    return true;
+  }
+
+  async setSubjectRating(sessionId: string, subject: string, rating: number): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    
+    session.subjectRatings[subject] = rating;
+    return true;
+  }
+
   private selectNextTechnology(session: InterviewSession): string {
-    // If no focused technology, rotate through skill ratings
-    const technologies = session.skillRatings.map(sr => sr.topic);
+    // Filter out skipped subjects
+    const technologies = session.skillRatings
+      .map(sr => sr.topic)
+      .filter(tech => !session.skippedSubjects.includes(tech));
+    
+    if (technologies.length === 0) {
+      // All subjects skipped, end session
+      return '';
+    }
+    
     const currentIndex = (session.currentQuestion - 1) % technologies.length;
     return technologies[currentIndex];
   }

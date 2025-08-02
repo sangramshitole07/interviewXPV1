@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { InterviewManager, SkillRating } from '@/lib/interview/InterviewManager';
+import { InterviewManager, SkillRating, QuestionWithType } from '@/lib/interview/InterviewManager';
 
 const interviewManager = new InterviewManager();
 
@@ -51,6 +51,16 @@ export async function POST(request: NextRequest) {
       case 'seedQuestions':
         await interviewManager.seedQuestions();
         return NextResponse.json({ success: true, message: 'Questions seeded successfully' });
+
+      case 'setSubjectRating':
+        const { sessionId: ratingSessionId, subject, rating } = params;
+        const ratingResult = await interviewManager.setSubjectRating(ratingSessionId, subject, rating);
+        return NextResponse.json({ success: ratingResult });
+
+      case 'skipSubject':
+        const { sessionId: skipSessionId, subject: skipSubject } = params;
+        const skipResult = await interviewManager.handleSubjectSkip(skipSessionId, skipSubject);
+        return NextResponse.json({ success: skipResult });
 
       default:
         return NextResponse.json({ success: false, error: 'Invalid action' }, { status: 400 });

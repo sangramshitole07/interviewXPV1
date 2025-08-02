@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { StructuredOutputParser } from '@langchain/core/output_parsers';
 import { RunnableSequence } from '@langchain/core/runnables';
 
+export type QuestionType = 'mcq' | 'code_snippet' | 'code_completion' | 'textual' | 'rating';
+
 // Initialize Groq LLM
 const llm = new ChatGroq({
   apiKey: process.env.GROQ_API_KEY,
@@ -20,17 +22,21 @@ const responseEvaluationSchema = z.object({
   followUpQuestion: z.string().optional().describe('Optional follow-up question'),
 });
 
-export type ResponseEvaluation = z.infer<typeof responseEvaluationSchema>;
-
-// Question generation schema
-const questionGenerationSchema = z.object({
+// Enhanced question generation schema
+const enhancedQuestionSchema = z.object({
   question: z.string().describe('The interview question'),
   expectedAnswer: z.string().describe('Key points expected in a good answer'),
   difficulty: z.enum(['beginner', 'intermediate', 'advanced']).describe('Question difficulty level'),
   tags: z.array(z.string()).describe('Relevant tags for the question'),
+  type: z.enum(['mcq', 'code_snippet', 'code_completion', 'textual', 'rating']).describe('Type of question'),
+  options: z.array(z.string()).optional().describe('Multiple choice options (for MCQ type)'),
+  codeSnippet: z.string().optional().describe('Code snippet (for code-related questions)'),
+  expectedCompletion: z.string().optional().describe('Expected code completion'),
 });
 
-export type GeneratedQuestion = z.infer<typeof questionGenerationSchema>;
+export type ResponseEvaluation = z.infer<typeof responseEvaluationSchema>;
+
+export type GeneratedQuestion = z.infer<typeof enhancedQuestionSchema>;
 
 export class InterviewChains {
   private evaluationChain: RunnableSequence;
@@ -41,9 +47,10 @@ export class InterviewChains {
     // Response evaluation chain
     const evaluationParser = StructuredOutputParser.fromZodSchema(responseEvaluationSchema);
     const evaluationPrompt = PromptTemplate.fromTemplate(`
-You are an expert technical interviewer evaluating a candidate's response to an interview question.
+You are an expert technical interviewer evaluating a candidate's response.
 
 Question: {question}
+Question Type: {questionType}
 Expected Answer Key Points: {expectedAnswer}
 Candidate's Response: {response}
 Topic: {topic}
@@ -68,20 +75,20 @@ Provide a score from 0-100 and detailed feedback.
     ]);
 
     // Question generation chain
-    const questionParser = StructuredOutputParser.fromZodSchema(questionGenerationSchema);
+    const questionParser = StructuredOutputParser.fromZodSchema(enhancedQuestionSchema);
     const questionPrompt = PromptTemplate.fromTemplate(`
 Generate a {difficulty} level interview question for {topic}.
 
 Requirements:
-- Question should be appropriate for {difficulty} level
-- Focus on {topic} specifically
-- Include practical application if possible
-- Avoid overly theoretical questions for beginner level
-- For advanced level, include system design or complex scenarios
+- Question type should vary: MCQ (25%), Code Snippet (25%), Code Completion (25%), Textual (25%)
+- For MCQ: Provide 4 options with one correct answer
+- For Code Snippet: Include a short code example to analyze/debug
+- For Code Completion: Provide partial code that needs completion
+- For Textual: Traditional interview questions requiring explanation
+- Difficulty: {difficulty} level appropriate for {topic}
+- Student's self-rated skill level: {skillRating}/10
 
 Previous questions asked: {previousQuestions}
-Student's skill level in {topic}: {skillRating}/10
-
 {format_instructions}
 `);
 
@@ -93,7 +100,7 @@ Student's skill level in {topic}: {skillRating}/10
 
     // Adaptive question chain (adjusts difficulty based on performance)
     const adaptivePrompt = PromptTemplate.fromTemplate(`
-Based on the student's performance history, generate the next appropriate question.
+Generate an adaptive interview question based on performance history.
 
 Student Performance Summary:
 - Average Score: {averageScore}
@@ -102,12 +109,12 @@ Student Performance Summary:
 - Current Difficulty: {currentDifficulty}
 - Skill Self-Rating: {skillRating}/10
 
-Performance Analysis:
-- If average score > 85: Increase difficulty or introduce advanced concepts
-- If average score 60-85: Maintain current difficulty, vary question types
-- If average score < 60: Decrease difficulty or provide foundational questions
+Adaptive Logic:
+- Score > 85: Increase difficulty, use advanced concepts
+- Score 60-85: Maintain difficulty, vary question types  
+- Score < 60: Decrease difficulty, focus on fundamentals
 
-Generate an appropriate next question that challenges the student appropriately.
+Question Type Distribution: MCQ (25%), Code Snippet (25%), Code Completion (25%), Textual (25%)
 
 {format_instructions}
 `);
@@ -124,11 +131,13 @@ Generate an appropriate next question that challenges the student appropriately.
     response: string,
     expectedAnswer: string,
     topic: string,
-    difficulty: string
+    difficulty: string,
+    questionType: QuestionType = 'textual'
   ): Promise<ResponseEvaluation> {
     try {
       const result = await this.evaluationChain.invoke({
         question,
+        questionType,
         response,
         expectedAnswer,
         topic,
@@ -161,7 +170,7 @@ Generate an appropriate next question that challenges the student appropriately.
         difficulty,
         skillRating,
         previousQuestions: previousQuestions.join(', '),
-        format_instructions: StructuredOutputParser.fromZodSchema(questionGenerationSchema).getFormatInstructions(),
+        format_instructions: StructuredOutputParser.fromZodSchema(enhancedQuestionSchema).getFormatInstructions(),
       });
 
       return result as GeneratedQuestion;
@@ -173,6 +182,7 @@ Generate an appropriate next question that challenges the student appropriately.
         expectedAnswer: `Should discuss practical experience, specific examples, and understanding of ${topic} concepts.`,
         difficulty,
         tags: [topic, 'experience', 'practical'],
+        type: 'textual' as QuestionType,
       };
     }
   }
@@ -191,7 +201,7 @@ Generate an appropriate next question that challenges the student appropriately.
         averageScore,
         recentScores: recentScores.join(', '),
         skillRating,
-        format_instructions: StructuredOutputParser.fromZodSchema(questionGenerationSchema).getFormatInstructions(),
+        format_instructions: StructuredOutputParser.fromZodSchema(enhancedQuestionSchema).getFormatInstructions(),
       });
 
       return result as GeneratedQuestion;

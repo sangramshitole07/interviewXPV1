@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import SkillRatingSlider from '@/components/interview/SkillRatingSlider'
 import InterviewCanvas from '@/components/interview/InterviewCanvas'
 import CopilotInterviewChat from '@/components/interview/CopilotInterviewChat'
-import { CopilotPopup } from '@copilotkit/react-ui'
+import { CopilotPopup, CopilotSidebar } from '@copilotkit/react-ui'
 import { 
   Brain, 
   Send, 
@@ -36,7 +36,7 @@ import {
 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
-import { SkillRating } from '@/lib/interview/InterviewManager'
+import { SkillRating, QuestionWithType } from '@/lib/interview/InterviewManager'
 
 interface Message {
   id: string
@@ -54,7 +54,7 @@ interface Message {
 interface InterviewState {
   phase: 'setup' | 'rating' | 'active' | 'completed'
   sessionId?: string
-  currentQuestion?: any
+  currentQuestion?: QuestionWithType
   skillRatings: SkillRating[]
 }
 
@@ -94,7 +94,6 @@ export default function InterviewPage() {
     phase: 'setup',
     skillRatings: []
   })
-  const [messages, setMessages] = useState<Message[]>([])
   const [currentInput, setCurrentInput] = useState('')
   const [isListening, setIsListening] = useState(false)
   const [selectedPersona, setSelectedPersona] = useState(interviewPersonas[0])
@@ -112,6 +111,7 @@ export default function InterviewPage() {
   const [isTypingIndicator, setIsTypingIndicator] = useState(false)
   const [sessionProgress, setSessionProgress] = useState<any>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const [showCopilotSidebar, setShowCopilotSidebar] = useState(false)
   const recognitionRef = useRef<any>(null)
 
   // Get filtered technologies based on user selection
@@ -218,15 +218,6 @@ export default function InterviewPage() {
         // Get first question
         await getNextQuestion(data.session.sessionId)
         
-        const welcomeMessage = `Hello! I'm your ${selectedPersona.name} interviewer ${selectedPersona.emoji}. I'll be conducting your mock interview today focusing on your selected technologies. Let's start!`
-        
-        setMessages([{
-          id: '1',
-          type: 'ai',
-          content: welcomeMessage,
-          timestamp: new Date()
-        }])
-        
         toast.success('Interview started! Good luck! 🚀')
       }
     } catch (error) {
@@ -250,15 +241,6 @@ export default function InterviewPage() {
       const data = await response.json()
       if (data.success && data.question) {
         setInterviewState(prev => ({ ...prev, currentQuestion: data.question }))
-        
-        // Add question to messages
-        const questionMessage: Message = {
-          id: Date.now().toString(),
-          type: 'ai',
-          content: data.question.question,
-          timestamp: new Date()
-        }
-        setMessages(prev => [...prev, questionMessage])
       }
     } catch (error) {
       console.error('Error getting next question:', error)
@@ -285,14 +267,6 @@ export default function InterviewPage() {
         const avgScore = sessionProgress?.averageScore || 0
         const completionRate = Math.round((currentQuestion / totalQuestions) * 100)
         
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'ai',
-          content: `🎉 **Interview Completed!**\n\n📊 **Performance Summary:**\n• **Overall Score**: ${avgScore}%\n• **Questions Completed**: ${currentQuestion - 1}/${totalQuestions}\n• **Completion Rate**: ${completionRate}%\n• **Duration**: ${Math.floor(sessionTime / 60)}:${(sessionTime % 60).toString().padStart(2, '0')}\n\n**Technology Breakdown:**\n${Object.entries(technologyScores).map(([tech, score]) => `• ${tech}: ${score}%`).join('\n')}\n\n**Feedback**: ${avgScore >= 85 ? '🌟 Outstanding performance! You demonstrated excellent technical knowledge and communication skills.' : avgScore >= 70 ? '👍 Great job! You showed solid understanding. Focus on providing more detailed examples.' : avgScore >= 55 ? '📈 Good effort! Review the fundamentals and practice explaining concepts more clearly.' : '💪 Keep practicing! Focus on strengthening your core knowledge in the selected technologies.'}\n\n**Next Steps:**\n• Review your weak areas\n• Practice more coding problems\n• Schedule another mock interview\n\nWould you like to start a new interview or return to the dashboard?`,
-          timestamp: new Date(),
-          metadata: { score: avgScore }
-        }])
-        
         toast.success(`Interview completed! Overall score: ${avgScore}% 🎯`)
       }
     } catch (error) {
@@ -305,14 +279,6 @@ export default function InterviewPage() {
     const content = messageContent || currentInput
     if (!content.trim() || interviewState.phase !== 'active' || !interviewState.sessionId) return
 
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      type: 'user',
-      content: content,
-      timestamp: new Date()
-    }
-
-    setMessages(prev => [...prev, userMessage])
     setCurrentInput('')
     setIsAiThinking(true)
     setIsTypingIndicator(true)
@@ -333,18 +299,7 @@ export default function InterviewPage() {
 
       const data = await response.json()
       if (data.success && data.evaluation) {
-        // Add AI feedback
-        const feedbackMessage: Message = {
-          id: Date.now().toString(),
-          type: 'ai',
-          content: `**Feedback:** ${data.evaluation.feedback}\n\n**Score:** ${data.evaluation.score}/100\n\n**Strengths:** ${data.evaluation.strengths.join(', ')}\n\n**Areas for Improvement:** ${data.evaluation.improvements.join(', ')}`,
-          timestamp: new Date(),
-          metadata: {
-            score: data.evaluation.score,
-            feedback: data.evaluation.feedback
-          }
-        }
-        setMessages(prev => [...prev, feedbackMessage])
+        toast.success(`Response submitted! Score: ${data.evaluation.score}/100`)
 
         // Get next question if not at the end
         if (currentQuestion < totalQuestions) {
@@ -391,14 +346,6 @@ export default function InterviewPage() {
       toast.success(`🎯 Focused on ${techName}`)
       
       if (interviewState.phase === 'active' && interviewState.sessionId) {
-        const focusMessage: Message = {
-          id: Date.now().toString(),
-          type: 'ai',
-          content: `Perfect! I'll now focus our discussion specifically on ${techName}. Let me ask you a targeted question about this technology.`,
-          timestamp: new Date()
-        }
-        setMessages(prev => [...prev, focusMessage])
-        
         // Get focused question
         setTimeout(() => {
           getNextQuestion(interviewState.sessionId!, techName)
@@ -412,13 +359,7 @@ export default function InterviewPage() {
     toast.success(`Switched to ${persona.name} ${persona.emoji}`)
     
     if (interviewState.phase === 'active') {
-      const switchMessage: Message = {
-        id: Date.now().toString(),
-        type: 'ai',
-        content: `I've switched to ${persona.name} mode. My questioning style will now adapt to be more ${persona.description.toLowerCase()}. Let's continue!`,
-        timestamp: new Date()
-      }
-      setMessages(prev => [...prev, switchMessage])
+      toast.info(`Switched to ${persona.name} mode`)
     }
   }
 
@@ -426,26 +367,12 @@ export default function InterviewPage() {
     switch (action) {
       case 'hint':
         if (interviewState.phase === 'active') {
-          const hintMessage: Message = {
-            id: Date.now().toString(),
-            type: 'ai',
-            content: `💡 **Hint**: Try to structure your answer using specific examples from your experience. Consider discussing the problem, your approach, the implementation, and the results. Don't forget to mention any challenges you faced and how you overcame them.`,
-            timestamp: new Date()
-          }
-          setMessages(prev => [...prev, hintMessage])
           toast.success('Hint provided! 💡')
         }
         break
       case 'skip':
         if (interviewState.phase === 'active' && currentQuestion < totalQuestions && interviewState.sessionId) {
           setCurrentQuestion(prev => prev + 1)
-          const skipMessage: Message = {
-            id: Date.now().toString(),
-            type: 'ai',
-            content: `No problem! Let's move on to the next question. Here's something different for you to consider...`,
-            timestamp: new Date()
-          }
-          setMessages(prev => [...prev, skipMessage])
           
           // Get next question
           setTimeout(() => {
@@ -625,6 +552,14 @@ export default function InterviewPage() {
                   <Sparkles className="h-3 w-3 mr-1" />
                   Live Session
                 </Badge>
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => setShowCopilotSidebar(!showCopilotSidebar)}
+                >
+                  <MessageSquare className="h-4 w-4 mr-2" />
+                  AI Assistant
+                </Button>
                 <div className="flex items-center space-x-2">
                   <span className="text-sm text-gray-600">Current Interviewer:</span>
                   <Badge variant="outline">
@@ -770,7 +705,8 @@ export default function InterviewPage() {
           <div className="lg:col-span-6">
             {interviewState.phase === 'active' ? (
               <CopilotInterviewChat
-                currentQuestion={interviewState.currentQuestion?.question ? interviewState.currentQuestion.question : 'Loading next question...'}
+                currentQuestion={interviewState.currentQuestion?.question || 'Loading next question...'}
+                questionData={interviewState.currentQuestion}
                 focusedTechnology={focusedTechnology || undefined}
                 onResponseSubmit={sendMessage}
                 onHintRequest={() => handleQuickAction('hint')}
@@ -950,12 +886,56 @@ export default function InterviewPage() {
 
       {/* CopilotKit Popup for additional AI assistance */}
       <CopilotPopup
-        instructions="You are an AI interview coach helping users practice for technical interviews. Provide helpful, encouraging feedback and suggestions. Help users structure their responses, explain technical concepts, and build confidence."
+        instructions={`You are an expert AI interview coach specializing in ${focusedTechnology || 'technical'} interviews. 
+        
+        Current Context:
+        - Interview Phase: ${interviewState.phase}
+        - Current Question: ${interviewState.currentQuestion?.question || 'None'}
+        - Question Type: ${interviewState.currentQuestion?.type || 'textual'}
+        - Focused Technology: ${focusedTechnology || 'General'}
+        - Session Progress: ${currentQuestion}/${totalQuestions}
+        
+        Your role:
+        1. Provide helpful hints without giving direct answers
+        2. Help structure responses using STAR method for behavioral questions
+        3. Explain technical concepts clearly
+        4. Suggest best practices and industry standards
+        5. Help with code analysis and debugging
+        6. Boost confidence and provide encouragement
+        
+        Be supportive, knowledgeable, and focus on helping the user learn and improve.`}
         labels={{
           title: "AI Interview Coach",
-          initial: "Hi! I'm your AI interview coach. I can help you practice answers, explain concepts, or give you tips for your interview. How can I assist you today?",
+          initial: `Hi! I'm your AI interview coach specializing in ${focusedTechnology || 'technical'} interviews. I can help you with:
+
+• Structuring your responses
+• Explaining technical concepts
+• Code analysis and debugging
+• Interview tips and best practices
+• Building confidence
+
+What would you like help with?`,
         }}
       />
+
+      {/* CopilotKit Sidebar */}
+      {showCopilotSidebar && (
+        <CopilotSidebar
+          instructions={`You are an AI interview assistant helping with ${focusedTechnology || 'technical'} interview preparation.
+          
+          Current question: ${interviewState.currentQuestion?.question || 'None'}
+          Question type: ${interviewState.currentQuestion?.type || 'textual'}
+          
+          Help the user understand concepts, structure responses, and provide guidance without giving direct answers.`}
+          labels={{
+            title: "Interview Assistant",
+            initial: "I'm here to help you with your interview questions. Ask me anything!",
+          }}
+          defaultOpen={showCopilotSidebar}
+          clickOutsideToClose={true}
+          onSetOpen={setShowCopilotSidebar}
+        />
+      )}
 
       {/* Canvas Modal */}
       <InterviewCanvas
