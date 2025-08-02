@@ -1,4 +1,4 @@
-import weaviate from 'weaviate-ts-client';
+import weaviate, { WhereFilter } from 'weaviate-ts-client';
 import type { WeaviateClient } from 'weaviate-ts-client';
 
 let client: WeaviateClient | null = null;
@@ -46,7 +46,6 @@ export class WeaviateService {
 
   async initializeSchema() {
     try {
-      // Create InterviewQuestions class
       const questionSchema = {
         class: 'InterviewQuestion',
         description: 'Interview questions with difficulty and topic information',
@@ -54,38 +53,37 @@ export class WeaviateService {
           {
             name: 'topic',
             dataType: ['text'],
-            description: 'The topic/technology this question covers'
+            description: 'The topic/technology this question covers',
           },
           {
             name: 'difficulty',
             dataType: ['text'],
-            description: 'Difficulty level: beginner, intermediate, advanced'
+            description: 'Difficulty level: beginner, intermediate, advanced',
           },
           {
             name: 'question',
             dataType: ['text'],
-            description: 'The actual interview question'
+            description: 'The actual interview question',
           },
           {
             name: 'expectedAnswer',
             dataType: ['text'],
-            description: 'Expected answer or key points'
+            description: 'Expected answer or key points',
           },
           {
             name: 'tags',
             dataType: ['text[]'],
-            description: 'Tags for categorization'
+            description: 'Tags for categorization',
           },
           {
             name: 'category',
             dataType: ['text'],
-            description: 'Question category: technical, behavioral, system_design'
-          }
+            description: 'Question category: technical, behavioral, system_design',
+          },
         ],
-        vectorizer: 'text2vec-openai'
+        vectorizer: 'text2vec-openai',
       };
 
-      // Create StudentResponses class
       const responseSchema = {
         class: 'StudentResponse',
         description: 'Student responses to interview questions with scores and feedback',
@@ -93,40 +91,40 @@ export class WeaviateService {
           {
             name: 'studentId',
             dataType: ['text'],
-            description: 'Unique identifier for the student'
+            description: 'Unique identifier for the student',
           },
           {
             name: 'questionId',
             dataType: ['text'],
-            description: 'Reference to the interview question'
+            description: 'Reference to the interview question',
           },
           {
             name: 'response',
             dataType: ['text'],
-            description: 'Student\'s response to the question'
+            description: "Student's response to the question",
           },
           {
             name: 'score',
             dataType: ['number'],
-            description: 'Score given to the response (0-100)'
+            description: 'Score given to the response (0-100)',
           },
           {
             name: 'feedback',
             dataType: ['text'],
-            description: 'Detailed feedback on the response'
+            description: 'Detailed feedback on the response',
           },
           {
             name: 'responseType',
             dataType: ['text'],
-            description: 'Type of response: text, voice, canvas'
-          }
+            description: 'Type of response: text, voice, canvas',
+          },
         ],
-        vectorizer: 'text2vec-openai'
+        vectorizer: 'text2vec-openai',
       };
 
       await this.client.schema.classCreator().withClass(questionSchema).do();
       await this.client.schema.classCreator().withClass(responseSchema).do();
-      
+
       console.log('Weaviate schema initialized successfully');
     } catch (error) {
       console.error('Error initializing Weaviate schema:', error);
@@ -144,10 +142,10 @@ export class WeaviateService {
           question: question.question,
           expectedAnswer: question.expectedAnswer,
           tags: question.tags,
-          category: question.category
+          category: question.category,
         })
         .do();
-      
+
       return result;
     } catch (error) {
       console.error('Error storing question:', error);
@@ -157,25 +155,27 @@ export class WeaviateService {
 
   async getQuestionsByTopicAndDifficulty(topic: string, difficulty: string, limit: number = 5) {
     try {
+      const whereClause: WhereFilter = {
+        operator: 'And',
+        operands: [
+          {
+            path: ['topic'],
+            operator: 'Equal',
+            valueText: topic,
+          },
+          {
+            path: ['difficulty'],
+            operator: 'Equal',
+            valueText: difficulty,
+          },
+        ],
+      };
+
       const result = await this.client.graphql
         .get()
         .withClassName('InterviewQuestion')
         .withFields('topic difficulty question expectedAnswer tags category')
-        .withWhere({
-          operator: 'And',
-          operands: [
-            {
-              path: ['topic'],
-              operator: 'Equal',
-              valueText: topic
-            },
-            {
-              path: ['difficulty'],
-              operator: 'Equal',
-              valueText: difficulty
-            }
-          ]
-        })
+        .withWhere(whereClause)
         .withLimit(limit)
         .do();
 
@@ -197,10 +197,10 @@ export class WeaviateService {
           response: response.response,
           score: response.score,
           feedback: response.feedback,
-          responseType: response.responseType
+          responseType: response.responseType,
         })
         .do();
-      
+
       return result;
     } catch (error) {
       console.error('Error storing student response:', error);
@@ -210,15 +210,17 @@ export class WeaviateService {
 
   async getStudentHistory(studentId: string, limit: number = 20) {
     try {
+      const whereClause: WhereFilter = {
+        path: ['studentId'],
+        operator: 'Equal',
+        valueText: studentId,
+      };
+
       const result = await this.client.graphql
         .get()
         .withClassName('StudentResponse')
         .withFields('questionId response score feedback responseType')
-        .withWhere({
-          path: ['studentId'],
-          operator: 'Equal',
-          valueText: studentId
-        })
+        .withWhere(whereClause)
         .withLimit(limit)
         .do();
 
@@ -231,24 +233,22 @@ export class WeaviateService {
 
   async searchSimilarQuestions(queryText: string, topic?: string, limit: number = 5) {
     try {
-      let whereClause = undefined;
-      if (topic) {
-        whereClause = {
-          path: ['topic'],
-          operator: 'Equal',
-          valueText: topic
-        };
-      }
-
-      const result = await this.client.graphql
+      let query = this.client.graphql
         .get()
         .withClassName('InterviewQuestion')
         .withFields('topic difficulty question expectedAnswer tags category')
-        .withNearText({ concepts: [queryText] })
-        .withWhere(whereClause)
-        .withLimit(limit)
-        .do();
+        .withNearText({ concepts: [queryText] });
 
+      if (topic) {
+        const whereClause: WhereFilter = {
+          path: ['topic'],
+          operator: 'Equal',
+          valueText: topic,
+        };
+        query = query.withWhere(whereClause);
+      }
+
+      const result = await query.withLimit(limit).do();
       return result.data?.Get?.InterviewQuestion || [];
     } catch (error) {
       console.error('Error searching similar questions:', error);

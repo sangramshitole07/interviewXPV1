@@ -210,10 +210,10 @@ Just type something like "help me improve this response" or "explain [concept]"`
               Keep suggestions concise and interview-appropriate.`,
               chatApiConfigs: {
                 suggestionsApiConfig: {
-                  forwardedParams: {
-                    max_tokens: 50,
-                    stop: ['\n'],
-                  },
+                //  forwardedParams: {
+                 //   max_tokens: 50,
+                   // stop: ['\n'],
+                  //},
                 },
               },
             }}
